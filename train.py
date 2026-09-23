@@ -39,17 +39,30 @@ def main():
     p.add_argument("--ckpt", type=Path, default=Path("checkpoints/ckpt.pt"))
     args = p.parse_args()
 
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+    print("device:", device)
 
     train_data = torch.load(DATA_DIR / f"train_{args.sr}.pt")
     val_data = torch.load(DATA_DIR / f"val_{args.sr}.pt")
 
-    config = {"R": args.R, "S": args.S, "n_layers": args.n_layers, "n_stacks": args.n_stacks}
+    config = {
+        "R": args.R,
+        "S": args.S,
+        "n_layers": args.n_layers,
+        "n_stacks": args.n_stacks,
+    }
     model = WaveNet(**config).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     T, B = args.T, args.batch_size
-    train_dl = DataLoader(AudioChunks(train_data, T, model.rf, n_items=10_000), batch_size=B)
+    train_dl = DataLoader(
+        AudioChunks(train_data, T, model.rf, n_items=10_000), batch_size=B
+    )
     val_dl = DataLoader(AudioChunks(val_data, T, model.rf, random=False), batch_size=B)
 
     args.ckpt.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +88,12 @@ def main():
                 if val < best_val:
                     best_val = val
                     torch.save(
-                        {"model": model.state_dict(), "config": config, "step": step, "val": val},
+                        {
+                            "model": model.state_dict(),
+                            "config": config,
+                            "step": step,
+                            "val": val,
+                        },
                         args.ckpt,
                     )
 
