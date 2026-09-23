@@ -11,9 +11,13 @@ __pycache__/
 data/
 
 # Model checkpoints
+checkpoints/
 *.pt
 *.pth
 *.ckpt
+
+# Generated samples and plots
+results/
 
 # OS / editor
 .DS_Store

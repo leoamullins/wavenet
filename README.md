@@ -2,6 +2,10 @@
 
 An unconditional WaveNet trained on LJSpeech at 8 kHz with 8-bit mu-law targets.
 
+## Paper
+
+Based on [WaveNet: A Generative Model for Raw Audio](https://arxiv.org/abs/1609.03499) (van den Oord et al., 2016).
+
 ## Layout
 
 ```text
