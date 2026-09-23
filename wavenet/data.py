@@ -6,8 +6,12 @@ import torch
 import soundfile as sf
 import torchaudio.functional as AF
 
+from wavenet.mel import SR, HOP, log_mel, compute_stats, standardise
+
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 WAV_DIR = DATA_DIR / "LJSpeech-1.1" / "wavs"
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 # ---------- 1. mu-law ----------
@@ -127,6 +131,88 @@ def preprocess(sr=8000, val_frac=0.05, n_clips=None, seed=0, out_dir=DATA_DIR):
         )
 
 
+# ----- mel preprocessing -------
+
+
+def split_files(val_frac, n_clips, seed):
+    """Shuffle the LJSpeech wav files and split them into train and val.
+
+    Gives the same split as preprocess for the same arguments.
+
+    Args:
+        val_frac: Fraction of clips held out for validation (at least one).
+        n_clips: If set, use only this many clips after shuffling.
+        seed: Seed for the shuffle.
+
+    Returns:
+        Dict with keys "val" and "train", each a list of wav file paths.
+    """
+    files = sorted(WAV_DIR.glob("*.wav"))
+
+    rng = random.Random(seed)
+    rng.shuffle(files)
+
+    if n_clips is not None:
+        files = files[:n_clips]
+
+    n_val = max(1, int(len(files) * val_frac))
+    splits = {"val": files[:n_val], "train": files[n_val:]}
+
+    return splits
+
+
+def preprocess_mel(val_frac=0.05, n_clips=None, seed=0, out_dir=DATA_DIR):
+    """Save per-clip mu-law codes and matching log-mels for each split.
+
+    Unlike preprocess, clips are kept separate so each one's codes stay
+    aligned with its mel frames. Mels are standardised with per-band
+    statistics from the train split only, then stored as float16.
+
+    Each split is saved to out_dir/{split}_{SR}_mel.pt as a dict with:
+        codes: List of 1-D uint8 tensors, one per clip.
+        mels: List of (N_MELS, len(codes) // HOP + 1) float16 tensors.
+        mean, std: The (N_MELS,) train statistics, needed to standardise
+            new mels at inference time.
+
+    Args:
+        val_frac: Fraction of clips held out for validation (at least one).
+        n_clips: If set, use only this many clips after shuffling.
+        seed: Seed for the shuffle that decides the split.
+        out_dir: Directory to write the .pt files to.
+    """
+    splits = split_files(val_frac, n_clips, seed)  # same split as preprocess
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def process(paths, name):
+        codes, mels = [], []
+
+        for i, p in enumerate(paths):
+            x = load_clip(p, SR)
+            codes.append(mu_law_encode(x).to(torch.uint8))
+            mels.append(log_mel(x))
+            if (i + 1) % 1000 == 0:
+                print(f"  {name}: {i + 1}/{len(paths)}")
+        return codes, mels
+
+    data = {name: process(paths, name) for name, paths in splits.items()}
+
+    mean, std = compute_stats(data["train"][1])
+
+    for name, (codes, mels) in data.items():
+        mels = [standardise(m, mean, std).half() for m in mels]
+
+        # sanity: frames match samples for every clip
+        for c, m in zip(codes, mels):
+            assert m.shape[1] == len(c) // HOP + 1, (m.shape, len(c))
+
+        torch.save(
+            {"codes": codes, "mels": mels, "mean": mean, "std": std},
+            out_dir / f"{name}_{SR}_mel.pt",
+        )
+        n = sum(len(c) for c in codes)
+        print(f"{name}: {len(codes)} clips, {n / SR / 3600:.2f} h")
+
+
 class AudioChunks(torch.utils.data.Dataset):
     """Fixed-length (input, target) windows cut from a flat stream of codes.
 
@@ -174,3 +260,59 @@ class AudioChunks(torch.utils.data.Dataset):
         y[: self.rf - 1] = -1
         return x, y
 
+
+class MelChunks(torch.utils.data.Dataset):
+
+    def __init__(self, codes, mels, T, rf, n_items=10_000, random=True):
+        assert T % HOP == 0, "T must be a multiple of HOP"
+        assert rf <= T, "rf >= T would mask every target"
+        assert len(codes) == len(mels)
+
+        self.T, self.rf, self.random = T, rf, random
+        self.F = T // HOP
+
+        n_valid = torch.tensor([(len(c) - 1 - T) // HOP + 1 for c in codes])
+
+        # dropping clips too short (i.e less than a chunk)
+        keep = (n_valid > 0).nonzero().flatten().tolist()
+        self.codes = [codes[j] for j in keep]
+        self.mels = [mels[j] for j in keep]
+        self.n_valid = n_valid[keep]
+        assert self.codes, "no clip is long enough for T"
+
+        if random:
+            self.weights = self.n_valid.float()
+            self.n_items = n_items
+        else:
+            self.index = [
+                (j, k)
+                for j, n in enumerate(self.n_valid.tolist())
+                for k in range(0, n, self.F)
+            ]
+            self.n_items = len(self.index)
+
+        dropped = len(codes) - len(self.codes)
+        print(
+            f"MelChunks: {len(self.codes)} clips ({dropped} dropped), "
+            f"{int(self.n_valid.sum()):,} valid windows, {self.n_items:,} items"
+        )
+
+    def __len__(self):
+        return self.n_items
+
+    def __getitem__(self, i):
+        if self.random:
+            j = torch.multinomial(self.weights, 1).item()  # clip, weighted by length
+            k = torch.randint(
+                0, int(self.n_valid[j]), (1,)
+            ).item()  # start frame in that clip
+        else:
+            j, k = self.index[i]
+
+        off = k * HOP  # frame-aligned sample offset
+        chunk = self.codes[j][off : off + self.T + 1].long()
+        x, y = chunk[:-1], chunk[1:].clone()  # clone: x and y share memory
+        y[: self.rf - 1] = -1  # targets without full context
+
+        c = self.mels[j][:, k : k + self.F].float()  # (N_MELS, F), stored as fp16
+        return x, c, y
