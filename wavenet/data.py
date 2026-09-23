@@ -6,8 +6,8 @@ import torch
 import soundfile as sf
 import torchaudio.functional as AF
 
-ROOT = Path(__file__).parent / "data"
-WAV_DIR = ROOT / "LJSpeech-1.1" / "wavs"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+WAV_DIR = DATA_DIR / "LJSpeech-1.1" / "wavs"
 
 
 # ---------- 1. mu-law ----------
@@ -45,7 +45,7 @@ def load_clip(path, sr=8000, top_db=30):
 
 
 # ---------- 3. preprocess (run once) ----------
-def preprocess(sr=8000, val_frac=0.05, n_clips=None, seed=0, out_dir=ROOT):
+def preprocess(sr=8000, val_frac=0.05, n_clips=None, seed=0, out_dir=DATA_DIR):
     files = sorted(WAV_DIR.glob("*.wav"))
     random.Random(seed).shuffle(files)
     if n_clips is not None:
