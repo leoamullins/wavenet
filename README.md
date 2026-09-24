@@ -1,6 +1,7 @@
 # wavenet
 
-An unconditional WaveNet trained on LJSpeech at 8 kHz with 8-bit mu-law targets.
+A WaveNet trained on LJSpeech at 8 kHz with 8-bit mu-law targets, either unconditional or conditioned on
+log-mel spectrograms as a vocoder.
 
 ## Paper
 
@@ -35,6 +36,13 @@ uv run python preprocess.py              # ~5% of clips held out for validation
 uv run python train.py --max-steps 5000
 ```
 
+For the mel-conditioned vocoder, build the per-clip mel data and train with `--mel`:
+
+```sh
+uv run python preprocess.py --mel        # data/{train,val}_8000_mel.pt
+uv run python train.py --mel --max-steps 20000
+```
+
 Run `uv run python train.py --help` to see the model and training options. Checkpoints store the model config
 alongside the weights:
 
@@ -44,21 +52,37 @@ model = WaveNet(**ck["config"])
 model.load_state_dict(ck["model"])
 ```
 
+Mel checkpoints also store the train-split `mean` and `std` used to standardise the mels. Use the same stats to
+standardise new mels before passing them to the model.
+
 ## Results
 
-The best unconditional model so far is `checkpoints/ckpt_bf16.pt`, trained with bf16 mixed precision:
+| | Unconditional (`ckpt_bf16.pt`) | Mel-conditioned (`ckpt_mel.pt`) |
+|---|---|---|
+| Config | `R=128, S=256, n_layers=10, n_stacks=3` | `R=64, S=128, n_layers=9, n_stacks=2`, 80 mels, hop 128 |
+| Parameters | 3.66M | 0.78M |
+| Receptive field | 3,071 samples (384 ms) | 1,024 samples (128 ms) |
+| Training steps | 48,000 | 20,000 |
+| Val loss (nats/sample) | 2.58 | 2.55 |
 
-| | |
-|---|---|
-| Config | `R=128, S=256, n_layers=10, n_stacks=3` |
-| Parameters | 3.66M |
-| Receptive field | 3,071 samples (384 ms) |
-| Training steps | 48,000 |
-| Val loss | 2.58 nats/sample (uniform over 256 classes: 5.55) |
+Val loss is cross-entropy over the 256 mu-law classes; a uniform guess scores 5.55. The unconditional model was
+trained with bf16 mixed precision. The mel model beats it with less than a quarter of the parameters, a third of
+the receptive field and fewer than half the training steps.
 
-### Speech continuation
+### Mel-conditioned resynthesis
 
-The model is given a 1,024-sample (0.13 s) clip of real speech, [`seed.wav`](samples/seed.wav), and
+The vocoder is given the mel spectrogram of a held-out clip, [`orig.wav`](samples/mel/orig.wav) (3 s), and
+generates [`resynth.wav`](samples/mel/resynth.wav) from it sample by sample, with no access to the original
+waveform.
+
+![Spectrograms of the original clip and the vocoder's resynthesis](samples/mel/resynth.png)
+
+The resynthesis keeps the original's words, timing, pitch contours and formants. The main difference is at the
+top of the band, where the higher harmonics are blurrier than in the original.
+
+### Speech continuation (unconditional)
+
+The unconditional model is given a 1,024-sample (0.13 s) clip of real speech, [`seed.wav`](samples/seed.wav), and
 generates [`continue_speech.wav`](samples/continue_speech.wav) (2.38 s) sample by sample from there.
 
 ![Waveform and spectrogram of the seed and the generated continuation](samples/continuation.png)
