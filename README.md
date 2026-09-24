@@ -80,6 +80,20 @@ waveform.
 The resynthesis keeps the original's words, timing, pitch contours and formants. The main difference is at the
 top of the band, where the higher harmonics are blurrier than in the original.
 
+### Generalising to an unseen voice
+
+LJSpeech is a single female speaker, so as a harder test the vocoder is given the mel spectrogram of a male TTS
+voice it has never heard, [`encoded_tts2.wav`](samples/encoded_tts2.wav) (2.8 s), and generates
+[`resynth2.wav`](samples/resynth2.wav).
+
+![Spectrograms of the male TTS clip and the vocoder's resynthesis](samples/resynth2.png)
+
+The result sounds like a rough version of the male voice rather than being pulled towards the LJSpeech speaker.
+The median pitch stays low, about 129 Hz against 121 Hz in the input, compared with about 193 Hz for the LJSpeech
+clip above. The timing, pauses and low harmonics come through intact. Above about 1.5 kHz the harmonics break up
+into noise, which gives the voice its rough, breathy quality. So the model has learned a general mapping from mels
+to waveforms rather than memorising one speaker, but it is less precise away from the training voice.
+
 ### Speech continuation (unconditional)
 
 The unconditional model is given a 1,024-sample (0.13 s) clip of real speech, [`seed.wav`](samples/seed.wav), and
